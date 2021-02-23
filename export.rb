@@ -1,30 +1,55 @@
-# Action options must be passed as a JSON string
+# RUNNING THE SCRIPT:
+#   ruby export.rb -c "<<PATH/CONFIG_FILE.rb>>"
+#   ruby export.rb -c "config/foo-web-server.rb"
 #
-# Format with example values:
+# Example Config File Values (See Readme for additional details)
 #
-# {
-#   "core" => {
-#     "api" => "https://foo.web-server/app/api/v1",
-#     "agent_api" => "https://foo.web-server/app/components/agent/app/api/v1",
-#     "proxy_url" => "https://foo.web-server/app/components",
-#     "server" => "https://web-server",
-#     "space_slug" => "foo",
-#     "space_name" => "Foo",
-#     "service_user_username" => "service_user_username",
-#     "service_user_password" => "secret",
-#     "task_api_v1" => "https://foo.web-server/app/components/task/app/api/v1",
-#     "task_api_v2" => "https://foo.web-server/app/components/task/app/api/v2"
-#   },
-#   "http_options" => {
-#     "log_level" => "info",
-#     "log_output" => "stderr"
-#   }
-# }
+# 
+=begin yml config file example
 
-require "logger"
-require "json"
+  ---
+  core:
+    # server_url: https://<SPACE>.kinops.io  OR https://<SERVER_NAME>.com/kinetic/<SPACE_SLUG>
+    server_url: https://web-server.com
+    space_slug: <SPACE_SLUG>
+    space_name: <SPACE_NAME>
+    service_user_username: <USER_NAME>
+    service_user_password: <PASSWORD>
+  options:
+    SUBMISSIONS_TO_EXPORT:
+    - datastore: true
+      formSlug: <FORM_SLUG>
 
-template_name = "platform-template-techbar"
+    REMOVE_DATA_PROPERTIES:
+    - createdAt
+    - createdBy
+    - updatedAt
+    - updatedBy
+    - closedAt
+    - closedBy
+    - submittedAt
+    - submittedBy
+    - id
+    - authStrategy
+    - key
+    - handle
+  task:
+    # server_url: https://<SPACE>.kinops.io/app/components/task   OR https://<SERVER_NAME>.com/kinetic-task
+    server_url: https://web-server.com
+    service_user_username: <USER_NAME>
+    service_user_password: <PASSWORD>
+  http_options:
+    log_level: info
+    log_output: stderr
+
+=end
+
+require 'logger'
+require 'json'
+require 'optparse'
+require 'kinetic_sdk'
+
+template_name = "platform-template"
 
 logger = Logger.new(STDERR)
 logger.level = Logger::INFO
@@ -33,12 +58,28 @@ logger.formatter = proc do |severity, datetime, progname, msg|
   "[#{date_format}] #{severity}: #{msg}\n"
 end
 
-raise "Missing JSON argument string passed to template export script" if ARGV.empty?
-begin
-  vars = JSON.parse(ARGV[0])
-rescue => e
-  raise "Template #{template_name} repair error: #{e.inspect}"
-end
+
+# Determine the Present Working Directory
+pwd = File.expand_path(File.dirname(__FILE__))
+
+ARGV << '-h' if ARGV.empty?
+
+# The options specified on the command line will be collected in *options*.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: example.rb [options]"
+
+  opts.on("-c", "--c CONFIG_FILE", "The Configuration file to use") do |config|
+    options["CONFIG_FILE"] = config
+  end
+  
+  # No argument, shows at tail.  This will print an options summary.
+  # Try it and see!
+  opts.on_tail("-h", "--help", "Show this message") do
+    puts opts
+    exit
+  end
+end.parse!
 
 # determine the directory paths
 platform_template_path = File.dirname(File.expand_path(__FILE__))
@@ -66,32 +107,6 @@ end
 # constants
 # ------------------------------------------------------------------------------
 
-# Configuration of which submissions should be exported
-SUBMISSIONS_TO_EXPORT = [
-  { "datastore" => true, "formSlug" => "notification-data" },
-  { "datastore" => true, "formSlug" => "notification-template-dates" },
-  { "datastore" => true, "formSlug" => "robot-definitions" },
-  { "datastore" => true, "formSlug" => "scheduler-availability" },
-  { "datastore" => true, "formSlug" => "scheduler-config" },
-  { "datastore" => true, "formSlug" => "scheduler-override" },
-  { "datastore" => true, "formSlug" => "scheduler" },
-  { "datastore" => true, "formSlug" => "tech-bar-settings" },
-]
-
-REMOVE_DATA_PROPERTIES = [
-  "createdAt",
-  "createdBy",
-  "updatedAt",
-  "updatedBy",
-  "closedAt",
-  "closedBy",
-  "submittedAt",
-  "submittedBy",
-  "id",
-  "authStrategy",
-  "key",
-  "handle",
-]
 
 # ------------------------------------------------------------------------------
 # setup
@@ -100,11 +115,21 @@ REMOVE_DATA_PROPERTIES = [
 logger.info "Installing gems for the \"#{template_name}\" template."
 Dir.chdir(platform_template_path) { system("bundle", "install") }
 
-require "kinetic_sdk"
+vars = {}
 
-http_options = (vars["http_options"] || {}).each_with_object({}) do |(k, v), result|
+# Read the config file specified in the command line into the variable "vars"
+if File.file?(file = "#{platform_template_path}/#{options['CONFIG_FILE']}")
+  vars.merge!( YAML.load(File.read(file)) )
+end
+
+# Set http_options based on values provided in the config file.
+http_options = (vars["http_options"] || {}).each_with_object({}) do |(k,v),result|
   result[k.to_sym] = v
 end
+
+# Set variables based on values provided in the config file.
+SUBMISSIONS_TO_EXPORT = vars["options"]["SUBMISSIONS_TO_EXPORT"]
+REMOVE_DATA_PROPERTIES = vars["options"]["REMOVE_DATA_PROPERTIES"]
 
 # ------------------------------------------------------------------------------
 # core
@@ -114,12 +139,13 @@ logger.info "Removing files and folders from the existing \"#{template_name}\" t
 FileUtils.rm_rf Dir.glob("#{core_path}/*")
 
 logger.info "Setting up the Core SDK"
+ 
 space_sdk = KineticSdk::Core.new({
-  space_server_url: vars["core"]["server"],
+  space_server_url: vars["core"]["server_url"],
   space_slug: vars["core"]["space_slug"],
   username: vars["core"]["service_user_username"],
   password: vars["core"]["service_user_password"],
-  options: http_options.merge({ export_directory: "#{core_path}" }),
+  options: http_options.merge({ export_directory: "#{core_path}" })
 })
 
 # fetch export from core service and write to export directory
@@ -134,7 +160,7 @@ Dir["#{core_path}/space/bridges/*.json"].each do |filename|
   bridge = JSON.parse(File.read(filename))
   if bridge.has_key?("key")
     bridge.delete("key")
-    File.open(filename, "w") { |file| file.write(JSON.pretty_generate(bridge)) }
+    File.open(filename, 'w') { |file| file.write(JSON.pretty_generate(bridge)) }
   end
 end
 
@@ -149,57 +175,89 @@ end
 if space.has_key?("platformComponents")
   if space["platformComponents"].has_key?("task")
     space["platformComponents"].delete("task")
-  end
-  (space["platformComponents"]["agents"] || []).each do |agent|
-    space["platformComponents"]["agents"]["url"] = ""
+  end 
+  (space["platformComponents"]["agents"] || []).each_with_index do |agent,idx|
+    space["platformComponents"]["agents"][idx]["url"] = ""
   end
 end
 # rewrite the space file
-File.open(filename, "w") { |file| file.write(JSON.pretty_generate(space)) }
+File.open(filename, 'w') { |file| file.write(JSON.pretty_generate(space)) }
 
 # cleanup discussion ids
 Dir["#{core_path}/**/*.json"].each do |filename|
   model = remove_discussion_id_attribute(JSON.parse(File.read(filename)))
-  File.open(filename, "w") { |file| file.write(JSON.pretty_generate(model)) }
+  File.open(filename, 'w') { |file| file.write(JSON.pretty_generate(model)) }
 end
 
 # export submissions
-logger.info "  - exporting and writing submission data"
-SUBMISSIONS_TO_EXPORT.each do |item|
+logger.info "Exporting and writing submission data"
+(SUBMISSIONS_TO_EXPORT || []).each do |item|
   is_datastore = item["datastore"] || false
-  logger.info "    - #{is_datastore ? "datastore" : "kapp"} form #{item["formSlug"]}"
+  logger.info "Exporting - #{is_datastore ? 'datastore' : 'kapp'} form #{item['formSlug']}"
   # build directory to write files to
   submission_path = is_datastore ?
-    "#{core_path}/space/datastore/forms/#{item["formSlug"]}" :
-    "#{core_path}/kapps/#{item["kappSlug"]}/forms/#{item["formSlug"]}"
-
+    "#{core_path}/space/datastore/forms/#{item['formSlug']}" :
+    "#{core_path}/space/kapps/#{item['kappSlug']}/forms/#{item['formSlug']}"
+  
+  # get attachment fields from form definition
+  attachment_form = is_datastore ?
+    space_sdk.find_datastore_form(item['formSlug'], {"include" => "fields.details"}) :
+    space_sdk.find_form(item['kappSlug'], item['formSlug'], {"include" => "fields.details"})
+  
+  # get attachment fields from form definition
+  attachement_files = attachment_form.status == 200 ? attachment_form.content['form']['fields'].select{ | file | file['dataType'] == "file" }.map { | field | field['name']  } : {}
+  
+  # set base url for attachments
+  attachment_base_url = is_datastore ?
+    "#{space_sdk.api_url.gsub("/app/api/v1", "")}/app/datastore" :
+    "#{space_sdk.api_url.gsub("/app/api/v1", "")}"
+    
   # create folder to write submission data to
   FileUtils.mkdir_p(submission_path, :mode => 0700)
 
   # build params to pass to the retrieve_form_submissions method
-  params = { "include" => "values", "limit" => 1000, "direction" => "ASC" }
+  params = {"include" => "values", "limit" => 1000, "direction" => "ASC"}
 
   # open the submissions file in write mode
-  file = File.open("#{submission_path}/submissions.ndjson", "w")
+  file = File.open("#{submission_path}/submissions.ndjson", 'w');
 
   # ensure the file is empty
   file.truncate(0)
   response = nil
   begin
-    # get submissions
+    # get submissions from datastore form or form
     response = is_datastore ?
-      space_sdk.find_all_form_datastore_submissions(item["formSlug"], params).content :
-      space_sdk.find_form_submissions(item["kappSlug"], item["formSlug"], params).content
+      space_sdk.find_all_form_datastore_submissions(item['formSlug'], params).content :
+      space_sdk.find_form_submissions(item['kappSlug'], item['formSlug'], params).content
     if response.has_key?("submissions")
-      # write each submission on its own line
+      # iterate over each submission
       (response["submissions"] || []).each do |submission|
+        # write each attachment to a a dir
+        submission['values'].select{ |field, value| attachement_files.include?(field)}.each{ |field,value|
+          submission_id = submission['id']
+          # define the dir to contain the attahment
+          download_dir = "#{submission_path}/#{submission_id}/#{field}"
+          # evaluate fields with multiple attachments
+          value.map.with_index{ | attachment, index |
+            # create folder to write attachment
+            FileUtils.mkdir_p(download_dir, :mode => 0700)
+            # dir and file name to write attachment
+            download_path = "#{download_dir}/#{File.join(".", attachment['name'])}"
+            # url to retrieve the attachment
+            url = URI.escape("#{attachment_base_url}/submissions/#{submission_id}/files/#{field}/#{index}/#{attachment['name']}")
+            # retrieve and write attachment
+            space_sdk.stream_download_to_file(download_path, url, {}, space_sdk.default_headers)
+            # add the "path" key to indicate the attachment's location
+            attachment['path'] = "/#{submission_id}/#{field}/#{attachment['name']}"
+          }
+        }
         # append each submission (removing the submission unwanted attributes)
-        file.puts(JSON.generate(submission.delete_if { |key, value| REMOVE_DATA_PROPERTIES.member?(key) }))
+        file.puts(JSON.generate(submission.delete_if { |key, value| REMOVE_DATA_PROPERTIES.member?(key)}))
       end
     end
-    params["pageToken"] = response["nextPageToken"]
+    params['pageToken'] = response['nextPageToken']
     # get next page of submissions if there are more
-  end while !response.nil? && !response["nextPageToken"].nil?
+  end while !response.nil? && !response['nextPageToken'].nil?
   # close the submissions file
   file.close()
 end
@@ -212,10 +270,10 @@ logger.info "Removing files and folders from the existing \"#{template_name}\" t
 FileUtils.rm_rf Dir.glob("#{task_path}/*")
 
 task_sdk = KineticSdk::Task.new({
-  app_server_url: "#{vars["core"]["proxy_url"]}/task",
-  username: vars["core"]["service_user_username"],
-  password: vars["core"]["service_user_password"],
-  options: http_options.merge({ export_directory: "#{task_path}" }),
+  app_server_url: "#{vars["task"]["server_url"]}",
+  username: vars["task"]["service_user_username"],
+  password: vars["task"]["service_user_password"],
+  options: http_options.merge({ export_directory: "#{task_path}" })
 })
 
 logger.info "Exporting the task components for the \"#{template_name}\" template."
@@ -224,6 +282,7 @@ logger.info "  exporting with api: #{task_sdk.api_url}"
 # export all sources, trees, routines, handlers,
 # groups, policy rules, categories, and access keys
 task_sdk.export
+
 
 # ------------------------------------------------------------------------------
 # complete

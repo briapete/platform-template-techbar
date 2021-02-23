@@ -79,7 +79,7 @@
 require "logger"
 require "json"
 
-template_name = "platform-template-techbar"
+template_name = "platform-template-service-portal"
 
 logger = Logger.new(STDERR)
 logger.level = Logger::INFO
@@ -445,21 +445,8 @@ task_sdk.update_engine({
 })
 
 # ------------------------------------------------------------------------------
-# tehcbar specific
+# service portal specific
 # ------------------------------------------------------------------------------
-
-# set the default kapp display attribute on space to tech-bar
-space_sdk.update_space({
-  "attributesMap" => {
-    "Default Kapp Display" => ["tech-bar"],
-  },
-})
-
-# Retrive all Robot Definitions
-space_sdk.find_form_datastore_submissions("robot-definitions").content["submissions"].each do |robot|
-  # Touch robot to fire the update webhook
-  space_sdk.update_datastore_submission(robot["id"], {})
-end
 
 # create requesting user that was specified
 if (vars["data"]["requesting_user"])
@@ -471,12 +458,15 @@ if (vars["data"]["requesting_user"])
     "enabled" => true,
     "spaceAdmin" => true,
     "memberships" => [
+      { "team" => { "name" => "Administrators" } },
       { "team" => { "name" => "Default" } },
+      { "team" => { "name" => "Role::Form Developer" } },
+      { "team" => { "name" => "Role::Task Developer" } },
+      { "team" => { "name" => "Role::Data Admin" } },
       { "team" => { "name" => "Role::Employee" } },
-      { "team" => { "name" => "Role::Tech Bar Display::HQ TechBar" } },
-      { "team" => { "name" => "Role::Scheduler" } },
-      { "team" => { "name" => "Scheduler::HQ TechBar" } },
+      { "team" => { "name" => "Role::Submission Support" } },
     ],
+    "profileAttributesMap" => { "Guided Tour" => ["Welcome Tour", "Services", "Queue"] },
   })
 end
 
